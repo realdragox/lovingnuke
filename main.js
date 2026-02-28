@@ -5,7 +5,6 @@ import path from 'path';
 import pino from 'pino';
 import { Boom } from '@hapi/boom';
 import { getUser, saveUser } from './users.js';
-import osintSearch, { formatOSINTResults } from './plugins/osint.js';
 
 const TG_TOKEN = '8544068654:AAGlQB9f2FN66OJ6cj-KbPVEzPNVRlCDV10';
 const SESSIONS_DIR = './users_session';
