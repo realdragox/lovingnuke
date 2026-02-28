@@ -16,9 +16,9 @@
     "telegraf": "^4.16.3"
   },
   "scripts": {
-    "start": "node main.js",
-    "api": "node apiServer.js",
-    "dev": "concurrently &quot;npm run start&quot; &quot;npm run api&quot;"
+    "start": "node apiServer.js",
+    "bot": "node main.js",
+    "dev": "concurrently \"npm run bot\" \"npm run start\""
   },
   "devDependencies": {
     "concurrently": "^9.2.1"
