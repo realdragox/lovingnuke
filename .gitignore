@@ -1,0 +1,14 @@
+# Backup / save files
+*.save
+*.bak
+
+# Node modules (non serve pushare)
+node_modules/
+
+# Sessioni o dati locali
+users_session/
+users_data/
+
+# Eventuali file temporanei
+*.log
+.DS_Store

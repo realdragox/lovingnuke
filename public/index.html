@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WhatsApp Bot Interface</title>
+    <link rel="stylesheet" href="style.css">
+<script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
+</head>
+<body>
+    <!-- Background Video -->
+    <div class="video-background">
+        <video autoplay muted loop playsinline>
+            <source src="background_video.mp4" type="video/mp4">
+        </video>
+        <div class="video-overlay"></div>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="loading-screen">
+        <div class="loading-content">
+            <div class="loading-bar-container">
+                <div class="loading-bar" id="loadingBar"></div>
+            </div>
+            <div class="loading-text" id="loadingText">Elaborazione in corso...</div>
+            <div class="loading-percentage" id="loadingPercentage">0%</div>
+        </div>
+    </div>
+
+    <!-- Main Container -->
+    <div class="main-container">
+        <!-- Header -->
+        <header class="header">
+            <h1 class="app-title">⚡ NINJA BOT</h1>
+            <div class="connection-status" id="connectionStatus">
+                <span class="status-dot"></span>
+                <span class="status-text">Non connesso</span>
+            </div>
+        </header>
+
+        <!-- Content Sections -->
+        <main class="content">
+            <!-- Home Section -->
+            <section id="homeSection" class="section active">
+                <div class="welcome-card">
+                    <h2 data-translate="welcome">Benvenuto</h2>
+                    <p data-translate="welcome_desc">Seleziona un'azione per iniziare</p>
+                </div>
+
+                <div class="action-grid">
+                    <button class="action-btn" onclick="showSection('pairingSection')">
+                        <span class="btn-icon">🔗</span>
+                        <span class="btn-text" data-translate="pairing">Connetti WhatsApp</span>
+                    </button>
+                    <button class="action-btn" onclick="handleNukeClick()">
+                        <span class="btn-icon">💣</span>
+                        <span class="btn-text" data-translate="nuke">Nuke</span>
+                    </button>
+                    <button class="action-btn" onclick="showSection('osintSection')">
+                        <span class="btn-icon">🔍</span>
+                        <span class="btn-text" data-translate="osint">OSINT</span>
+                    </button>
+                </div>
+            </section>
+
+            <!-- Pairing Section -->
+            <section id="pairingSection" class="section">
+                <div class="section-header">
+                    <h2 data-translate="pairing_title">Connetti WhatsApp</h2>
+                    <p data-translate="pairing_desc">Inserisci il numero di telefono per connettere WhatsApp</p>
+                </div>
+
+                <div class="form-group">
+                    <label data-translate="phone_number">Numero di telefono</label>
+                    <input type="tel" id="phoneNumber" placeholder="39xxxxxxxxxx" class="input-field">
+                </div>
+
+                <button class="primary-btn" onclick="generatePairingCode()">
+                    <span data-translate="generate_code">Genera Codice</span>
+                </button>
+
+                <div id="pairingResult" class="result-box hidden">
+                    <div class="pairing-code" id="pairingCode"></div>
+                    <p class="pairing-info" data-translate="pairing_info">il codice scade in 2 minuti</p>
+                </div>
+            </section>
+
+            <!-- Nuke Section - Initial State -->
+            <section id="nukeSection" class="section">
+                <div class="section-header">
+                    <h2 data-translate="nuke_title">Nuke</h2>
+                    <p data-translate="nuke_desc">Gestisci operazioni Nuke</p>
+                </div>
+
+                <div id="nukeInitialState" class="nuke-state">
+                    <div class="nuke-buttons">
+                        <button class="primary-btn" onclick="showNukeConfig()">
+                            <span data-translate="execute_nuke">Esegui Nuke</span>
+                        </button>
+                        <button class="secondary-btn" onclick="disconnect()">
+                            <span data-translate="disconnect">Disconnetti</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Nuke Configuration -->
+                <div id="nukeConfig" class="nuke-state hidden">
+                    <div class="form-group">
+                        <label data-translate="message1">Inserisci primo messaggio:</label>
+                        <textarea id="message1" class="input-field" rows="4" placeholder="Scrivi qui il primo messaggio..."></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label data-translate="message2">Inserisci secondo messaggio:</label>
+                        <textarea id="message2" class="input-field" rows="4" placeholder="Scrivi qui il secondo messaggio (opzionale)..."></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label data-translate="signature">Imposta nome da mettere in SVT by ___:</label>
+                        <input type="text" id="signature" class="input-field" placeholder="Nome">
+                    </div>
+
+                    <button class="primary-btn" onclick="confirmNukeConfig()">
+                        <span data-translate="confirm">Conferma</span>
+                    </button>
+                </div>
+
+                <!-- Nuke Group Selection -->
+                <div id="nukeGroupSelection" class="nuke-state hidden">
+                    <div class="section-header">
+                        <h3 data-translate="select_group">Seleziona Gruppo</h3>
+                    </div>
+                    <div id="groupsList" class="groups-list"></div>
+                </div>
+
+                <!-- Nuke Confirmation -->
+                <div id="nukeConfirmation" class="nuke-state hidden">
+                    <div class="confirmation-box">
+                        <h3 data-translate="confirm_nuke">Vuoi nukkare questo gruppo?</h3>
+                        <p id="confirmGroupName" class="group-name"></p>
+                        <div class="confirmation-buttons">
+                            <button class="secondary-btn" onclick="cancelNuke()">
+                                <span data-translate="no">No</span>
+                            </button>
+                            <button class="danger-btn" onclick="executeNuke()">
+                                <span data-translate="nuke_it">Nukkiamolo😈</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Nuke Result -->
+                <div id="nukeResult" class="result-box hidden"></div>
+            </section>
+
+            <!-- OSINT Section -->
+            <section id="osintSection" class="section">
+                <div class="section-header">
+                    <h2 data-translate="osint_title">OSINT</h2>
+                    <p data-translate="osint_desc">Ricerca informazioni su telefono, IP o email</p>
+                </div>
+
+                <div class="osint-tabs">
+                    <button class="osint-tab active" data-type="phone" onclick="selectOsintType('phone')">
+                        <span>📱</span>
+                        <span data-translate="phone">Telefono</span>
+                    </button>
+                    <button class="osint-tab" data-type="ip" onclick="selectOsintType('ip')">
+                        <span>🌐</span>
+                        <span data-translate="ip">IP</span>
+                    </button>
+                    <button class="osint-tab" data-type="email" onclick="selectOsintType('email')">
+                        <span>📧</span>
+                        <span data-translate="email">Email</span>
+                    </button>
+                </div>
+
+                <div class="form-group">
+                    <label id="osintLabel" data-translate="phone_number">Numero di telefono</label>
+                    <input type="text" id="osintQuery" class="input-field" placeholder="Inserisci la query...">
+                </div>
+
+                <button class="primary-btn" onclick="executeOsint()">
+                    <span data-translate="search">Cerca</span>
+                </button>
+
+                <div id="osintResult" class="result-box hidden"></div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Bottom Navigation -->
+    <nav class="bottom-nav">
+        <button class="nav-btn active" onclick="goHome()">
+            <span class="nav-icon">🏠</span>
+            <span class="nav-text" data-translate="home">Home</span>
+        </button>
+        <button class="nav-btn" onclick="goBack()">
+            <span class="nav-icon">⬅️</span>
+            <span class="nav-text" data-translate="back">Indietro</span>
+        </button>
+        <button class="nav-btn" onclick="toggleLanguage()">
+            <span class="nav-icon">🌐</span>
+            <span class="nav-text" id="langText">IT</span>
+        </button>
+    </nav>
+
+    <script src="app.js"></script>
+</body>
+</html>

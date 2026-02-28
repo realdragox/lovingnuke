@@ -1,0 +1,8 @@
+@whiskeysockets/baileys
+telegraf
+@hapi/boom
+pino
+pino-pretty
+path
+fs
+
