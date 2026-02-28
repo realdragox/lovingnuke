@@ -7,7 +7,7 @@ import { Boom } from '@hapi/boom';
 import { getUser, saveUser } from './users.js';
 import osintSearch, { formatOSINTResults } from './plugins/osint.js';
 
-const tg_token = process.env.TG_TOKEN; // ora prende il token dalle variabili d'ambiente
+const TG_TOKEN = '8544068654:AAGlQB9f2FN66OJ6cj-KbPVEzPNVRlCDV10';
 const SESSIONS_DIR = './users_session';
 const MAIN_IMAGE = './main.jpeg';
 
