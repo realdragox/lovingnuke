@@ -1,0 +1,169 @@
+-import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, Browsers, DisconnectReason } from '@whiskeysockets/baileys';
+import { Telegraf, Markup } from 'telegraf';
+import fs from 'fs';
+import pino from 'pino';
+import { Boom } from '@hapi/boom';
+
+const TG_TOKEN = '8544068654:AAGlQB9f2FN66OJ6cj-KbPVEzPNVRlCDV10'; 
+const SESSION_FILE = './sessions_db.json';
+const PRESETS_FILE = './presets.json';
+const MAIN_IMAGE = './main.jpeg';
+
+if (!fs.existsSync(SESSION_FILE)) fs.writeFileSync(SESSION_FILE, '{}');
+if (!fs.existsSync(PRESETS_FILE)) fs.writeFileSync(PRESETS_FILE, '[]');
+
+const bot = new Telegraf(TG_TOKEN);
+
+const getSess = (id) => JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'))[id] || {};
+const saveSess = (id, data) => {
+    const all = JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'));
+    all[id] = data;
+    fs.writeFileSync(SESSION_FILE, JSON.stringify(all, null, 2));
+};
+
+let conn = null;
+let isSocketConnected = false;
+
+async function startWA() {
+    const { state, saveCreds } = await useMultiFileAuthState('./session_snow');
+    const { version } = await fetchLatestBaileysVersion();
+    conn = makeWASocket({
+        version,
+        auth: state,
+        logger: pino({ level: 'silent' }),
+        printQRInTerminal: false,
+        browser: Browsers.ubuntu('Chrome'),
+    });
+    conn.ev.on('creds.update', saveCreds);
+    conn.ev.on('connection.update', (u) => {
+        if (u.connection === 'open') isSocketConnected = true;
+        if (u.connection === 'close') {
+            isSocketConnected = false;
+            if ((u.lastDisconnect?.error instanceof Boom)?.output?.statusCode !== DisconnectReason.loggedOut) startWA();
+        }
+    });
+}
+
+const renderMenu = (ctx) => {
+    const status = isSocketConnected ? "connesso" : "nn connesso";
+    const text = `
+† ─────────── ⚡︎ ─────────── †
+      **𝐃𝐑𝐀𝐆𝐎𝐗 𝐍𝐔𝐊𝐄**
+† ─────────── ⚡︎ ─────────── †
+
+  » ─────────────────────── «
+   𝐔𝐬𝐚𝐧𝐝𝐨 𝐪𝐮𝐞𝐬𝐭𝐨 𝐛𝐨𝐭, 𝐥𝐚 𝐜𝐡𝐚𝐭 
+   𝐬𝐯𝐚𝐧𝐢𝐬𝐜𝐞 𝐝𝐚 𝐬𝐞𝐫𝐯𝐞𝐫, 𝐛𝐚𝐜𝐤𝐮𝐩 
+   𝐞 𝐠𝐚𝐥𝐥𝐞𝐫𝐢𝐞. 𝐍𝐨𝐧 𝐫𝐞𝐬𝐭𝐚𝐧𝐨 𝐥𝐨𝐠 
+   𝐧é 𝐚𝐯𝐯𝐢𝐬𝐢. 𝐏𝐞𝐫 𝐢𝐥 𝐦𝐨𝐧𝐝𝐨, 𝐪𝐮𝐞𝐥 
+   𝐥𝐞𝐠𝐚𝐦𝐞 𝐧𝐨𝐧 è 𝐦𝐚𝐢 𝐞𝐬𝐢𝐬𝐭𝐢𝐭𝐨. 
+   𝐆𝐥𝐢 𝐮𝐭𝐞𝐧𝐭𝐢 𝐜𝐨𝐢𝐧𝐯𝐨𝐥𝐭𝐢 𝐩𝐫𝐨𝐯𝐚𝐧𝐨 
+   𝐬𝐨𝐥𝐨 𝐮𝐧 𝐢𝐦𝐩𝐫𝐨𝐯𝐯𝐢𝐬𝐨 𝐬𝐦𝐚𝐫𝐫𝐢𝐦𝐞𝐧𝐭𝐨, 
+   𝐝𝐢𝐦𝐞𝐧𝐭𝐢𝐜𝐚𝐧𝐝𝐨 𝐩𝐞𝐫𝐬𝐢𝐧𝐨 𝐢𝐥 𝐯𝐨𝐥𝐭𝐨 
+   𝐝𝐢 𝐜𝐡𝐢 𝐬𝐭𝐚𝐯𝐚𝐧𝐨 𝐥𝐞𝐠𝐠𝐞𝐧𝐝𝐨. 
+  » ─────────────────────── «
+
+  Status: ${status}
+† ───────────────────────── †`;
+
+    const buttons = isSocketConnected ? [
+        [Markup.button.callback('🚀 I tuoi Preset', 'manage_presets')],
+        [Markup.button.callback('➕ Aggiungi Preset', 'add_preset')],
+        [Markup.button.callback('🔄 Forza Riconnessione', 'collega')]
+    ] : [[Markup.button.callback('🤖 Connetti Bot', 'collega')]];
+
+    if (fs.existsSync(MAIN_IMAGE)) {
+        return ctx.replyWithPhoto({ source: fs.readFileSync(MAIN_IMAGE) }, { 
+            caption: text, 
+            parse_mode: 'Markdown', 
+            ...Markup.inlineKeyboard(buttons) 
+        });
+    } else {
+        return ctx.reply(text, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+    }
+};
+
+bot.start(renderMenu);
+bot.command('menu', renderMenu);
+
+bot.action('add_preset', (ctx) => {
+    const s = getSess(ctx.chat.id);
+    s.step = 'ADD_PRESET_NAME';
+    saveSess(ctx.chat.id, s);
+    ctx.reply("✍️ Inserisci il NOME del preset (es: Frosty):");
+});
+
+bot.action('manage_presets', (ctx) => {
+    const presets = JSON.parse(fs.readFileSync(PRESETS_FILE));
+    if (presets.length === 0) return ctx.reply("⚠️ Nessun preset salvato.");
+    const buttons = presets.map((p, i) => [Markup.button.callback(`🔹 ${p.nome}`, `sel_p:${i}`)]);
+    ctx.reply("🎯 Seleziona preset da attivare:", Markup.inlineKeyboard(buttons));
+});
+
+bot.action(/sel_p:(.+)/, async (ctx) => {
+    const idx = parseInt(ctx.match[1]);
+    const presets = JSON.parse(fs.readFileSync(PRESETS_FILE));
+    const s = getSess(ctx.chat.id);
+    s.task = { msg: presets[idx].messaggio, name: presets[idx].nome };
+    saveSess(ctx.chat.id, s);
+    
+    if (!isSocketConnected) return ctx.reply("❌ WhatsApp non connesso.");
+    ctx.reply("🔍 Caricamento gruppi...");
+    try {
+        const groups = await conn.groupFetchAllParticipating();
+        const buttons = Object.values(groups).map(g => [Markup.button.callback(g.subject, `target:${g.id}`)]);
+        for (let i = 0; i < buttons.length; i += 15) {
+            await ctx.reply(i === 0 ? "🎯 Target:" : "...", Markup.inlineKeyboard(buttons.slice(i, i + 15)));
+        }
+    } catch (e) { ctx.reply("❌ Errore gruppi."); }
+});
+
+bot.action(/target:(.+)/, async (ctx) => {
+    const groupId = ctx.match[1];
+    const s = getSess(ctx.chat.id);
+    if (!s.task) return ctx.reply("❌ Errore dati.");
+
+    try {
+        const { default: svtHandler } = await import('./plugins/svt_cmd.js');
+        const metadata = await conn.groupMetadata(groupId);
+        await svtHandler(
+            { key: { remoteJid: groupId } },
+            { conn, participants: metadata.participants, text: `${s.task.msg} | ${s.task.name}`, isTelegram: true }
+        );
+        ctx.reply(`✅ Azione completata su: ${metadata.subject}`);
+        s.task = null; saveSess(ctx.chat.id, s);
+    } catch (e) { ctx.reply("❌ Errore esecuzione."); }
+});
+
+bot.on('text', async (ctx) => {
+    const s = getSess(ctx.chat.id);
+    const txt = ctx.message.text;
+
+    if (s.step === 'WAIT_PHONE') {
+        const code = await conn.requestPairingCode(txt.replace(/[^0-9]/g, ''));
+        ctx.reply(`✅ CODICE: \`${code}\``);
+        s.step = null;
+    } else if (s.step === 'ADD_PRESET_NAME') {
+        s.newPreset = { nome: txt };
+        s.step = 'ADD_PRESET_MSG';
+        ctx.reply(`Ok, ora inserisci il MESSAGGIO per "${txt}":`);
+    } else if (s.step === 'ADD_PRESET_MSG') {
+        const presets = JSON.parse(fs.readFileSync(PRESETS_FILE));
+        presets.push({ nome: s.newPreset.nome, messaggio: txt });
+        fs.writeFileSync(PRESETS_FILE, JSON.stringify(presets, null, 2));
+        ctx.reply(`✅ Preset "${s.newPreset.nome}" salvato!`);
+        s.step = null; s.newPreset = null;
+    }
+    saveSess(ctx.chat.id, s);
+});
+
+bot.action('collega', (ctx) => {
+    const s = getSess(ctx.chat.id);
+    s.step = 'WAIT_PHONE'; saveSess(ctx.chat.id, s);
+    startWA();
+    ctx.reply("📱 Inserisci il numero (es: 39333...):");
+});
+
+bot.launch();
+startWA();
+
