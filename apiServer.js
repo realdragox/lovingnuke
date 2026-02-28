@@ -1,0 +1,457 @@
+import express from 'express';
+import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
+
+// Importa le funzioni dal bot esistente
+import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, DisconnectReason, delay, makeCacheableSignalKeyStore } from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
+import pino from 'pino';
+import { getUser, saveUser } from './users.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+// ============================================
+// CONFIGURAZIONE GLOBALE (dal bot)
+// ============================================
+const SESSIONS_DIR = './users_session';
+const msgRetryCounterCache = new Map();
+const MAX_RECONNECT_ATTEMPTS = 10;
+const RECONNECT_DELAY_BASE = 5000;
+
+// Mappe per gestire connessioni e richieste
+const userConnections = new Map();
+const reconnectAttempts = new Map();
+const pairingRequests = new Map();
+
+// ============================================
+// VALIDAZIONE NUMERO DI TELEFONO
+// ============================================
+function validatePhoneNumber(num) {
+    if (!num) return { valid: false, error: 'Numero mancante' };
+    let cleaned = num.replace(/\D/g, '');
+    if (cleaned.startsWith('00')) cleaned = cleaned.slice(2);
+    if (cleaned.length < 7) return { valid: false, error: 'Numero troppo corto' };
+    return { valid: true, cleaned, error: null };
+}
+
+// ============================================
+// GENERAZIONE PAIRING CODE
+// ============================================
+async function generatePairing(userId, num) {
+    // Previeni richieste multiple
+    if (pairingRequests.has(userId)) {
+        return { success: false, error: 'Hai già una richiesta in corso. Attendi...' };
+    }
+
+    // Validazione numero
+    const validation = validatePhoneNumber(num);
+    if (!validation.valid) {
+        return { success: false, error: validation.error };
+    }
+    const cleanNum = validation.cleaned;
+
+    pairingRequests.set(userId, true);
+    const sessionPath = path.join(SESSIONS_DIR, `user_${userId}`);
+    
+    // Chiudi connessione esistente
+    if (userConnections.has(userId)) {
+        try {
+            const oldConn = userConnections.get(userId);
+            oldConn.end();
+            userConnections.delete(userId);
+        } catch (e) {
+            console.error('Errore chiusura connessione:', e);
+        }
+    }
+
+    // Cancella sessione esistente
+    if (fs.existsSync(sessionPath)) {
+        try {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+            await delay(1500);
+        } catch (e) {
+            console.error('Errore pulizia sessione:', e);
+        }
+    }
+
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+        const { version } = await fetchLatestBaileysVersion();
+
+        const conn = makeWASocket({
+            version,
+            auth: {
+                creds: state.creds,
+                keys: makeCacheableSignalKeyStore(state.keys, pino({ level: "fatal" })),
+            },
+            logger: pino({ level: 'silent' }),
+            printQRInTerminal: false,
+            mobile: false,
+            browser: ["Mac OS", "Chrome", "121.0.0"],
+            markOnlineOnConnect: true,
+            syncFullHistory: false,
+            generateHighQualityLinkPreview: false,
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            retryRequestDelayMs: 250,
+            keepAliveIntervalMs: 30000,
+            msgRetryCounterCache,
+            getMessage: async () => undefined
+        });
+
+        conn.ev.on('creds.update', saveCreds);
+        userConnections.set(userId, conn);
+
+        conn.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+
+            if (connection === 'open') {
+                console.log(`✅ Utente ${userId} connesso con pairing code`);
+                pairingRequests.delete(userId);
+                reconnectAttempts.set(userId, 0);
+            }
+
+            if (connection === 'close') {
+                const statusCode = lastDisconnect?.error instanceof Boom 
+                    ? lastDisconnect.error.output.statusCode 
+                    : null;
+
+                console.log(`⚠️ Connessione chiusa per ${userId}. Status: ${statusCode}`);
+
+                if (statusCode === DisconnectReason.loggedOut || statusCode === 401 || statusCode === 403 || statusCode === 428) {
+                    pairingRequests.delete(userId);
+                    userConnections.delete(userId);
+                    reconnectAttempts.delete(userId);
+                    
+                    if (fs.existsSync(sessionPath)) {
+                        fs.rmSync(sessionPath, { recursive: true, force: true });
+                    }
+                } else {
+                    const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                    
+                    if (shouldReconnect) {
+                        const attempts = reconnectAttempts.get(userId) || 0;
+                        
+                        if (attempts < MAX_RECONNECT_ATTEMPTS) {
+                            reconnectAttempts.set(userId, attempts + 1);
+                            const delayTime = Math.min(RECONNECT_DELAY_BASE * Math.pow(2, attempts), 60000);
+                            
+                            console.log(`🔄 Riconnessione ${attempts + 1}/${MAX_RECONNECT_ATTEMPTS} per ${userId} tra ${delayTime/1000}s`);
+                            
+                            await delay(delayTime);
+                            userConnections.delete(userId);
+                            await startWA(userId, true);
+                        } else {
+                            console.log(`❌ Max tentativi raggiunto per ${userId}`);
+                            userConnections.delete(userId);
+                            reconnectAttempts.delete(userId);
+                            pairingRequests.delete(userId);
+                        }
+                    }
+                }
+            }
+        });
+
+        // Richiesta codice pairing
+        await delay(3000);
+
+        if (!conn.authState.creds.registered) {
+            try {
+                const code = await conn.requestPairingCode(cleanNum);
+                const formattedCode = code?.match(/.{1,4}/g)?.join('-') || code;
+                
+                pairingRequests.delete(userId);
+                return { success: true, code: formattedCode };
+            } catch (e) {
+                console.error('Errore richiesta pairing:', e);
+                pairingRequests.delete(userId);
+                userConnections.delete(userId);
+                return { success: false, error: 'Errore generazione codice' };
+            }
+        }
+        
+        // Timeout pulizia dopo 3 minuti
+        setTimeout(() => { 
+            if (pairingRequests.has(userId)) {
+                pairingRequests.delete(userId);
+                console.log(`⏱️ Timeout pairing per ${userId}`);
+            }
+        }, 180000);
+
+    } catch (error) {
+        console.error('Errore critico pairing:', error);
+        pairingRequests.delete(userId);
+        userConnections.delete(userId);
+        return { success: false, error: 'Errore critico' };
+    }
+}
+
+// ============================================
+// CONNESSIONE WHATSAPP NORMALE
+// ============================================
+async function startWA(userId, isAuto = false) {
+    const sessionPath = path.join(SESSIONS_DIR, `user_${userId}`);
+
+    try {
+        const { state, saveCreds } = await useMultiFileAuthState(sessionPath);
+        const { version } = await fetchLatestBaileysVersion();
+
+        const conn = makeWASocket({
+            version,
+            auth: state,
+            logger: pino({ level: 'silent' }),
+            browser: ["Ubuntu", "Chrome", "20.0.04"],
+            connectTimeoutMs: 60000,
+            defaultQueryTimeoutMs: 60000,
+            keepAliveIntervalMs: 30000,
+            retryRequestDelayMs: 2000,
+            markOnlineOnConnect: true,
+            syncFullHistory: false,
+            printQRInTerminal: false,
+            getMessage: async () => undefined
+        });
+
+        userConnections.set(userId, conn);
+        conn.ev.on('creds.update', saveCreds);
+
+        conn.ev.on('connection.update', async (update) => {
+            const { connection, lastDisconnect } = update;
+
+            if (connection === 'open') {
+                console.log(`✅ Utente ${userId} riconnesso`);
+                reconnectAttempts.set(userId, 0);
+            }
+
+            if (connection === 'close') {
+                const shouldReconnect = (lastDisconnect?.error instanceof Boom)
+                    ? lastDisconnect.error.output.statusCode !== DisconnectReason.loggedOut
+                    : true;
+
+                const statusCode = lastDisconnect?.error instanceof Boom
+                    ? lastDisconnect.error.output.statusCode
+                    : null;
+
+                console.log(`⚠️ Connessione chiusa per ${userId}. Codice: ${statusCode}`);
+
+                if (shouldReconnect) {
+                    const attempts = reconnectAttempts.get(userId) || 0;
+                    if (attempts < MAX_RECONNECT_ATTEMPTS) {
+                        reconnectAttempts.set(userId, attempts + 1);
+                        const delayTime = Math.min(RECONNECT_DELAY_BASE * Math.pow(2, attempts), 60000);
+                        console.log(`🔄 Tentativo ${attempts + 1}/${MAX_RECONNECT_ATTEMPTS} per ${userId} tra ${delayTime/1000}s`);
+                        await delay(delayTime);
+                        userConnections.delete(userId);
+                        await startWA(userId, true);
+                    } else {
+                        console.log(`❌ Max tentativi per ${userId}`);
+                        userConnections.delete(userId);
+                        reconnectAttempts.delete(userId);
+                    }
+                } else {
+                    console.log(`🚪 Logout per ${userId}`);
+                    userConnections.delete(userId);
+                    reconnectAttempts.delete(userId);
+                }
+            }
+        });
+
+        return conn;
+    } catch (error) {
+        console.error(`❌ Errore inizializzazione ${userId}:`, error);
+        const attempts = reconnectAttempts.get(userId) || 0;
+        if (attempts < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempts.set(userId, attempts + 1);
+            await delay(RECONNECT_DELAY_BASE);
+            return startWA(userId, isAuto);
+        }
+        throw error;
+    }
+}
+
+// ============================================
+// API ENDPOINTS
+// ============================================
+
+// Verifica stato connessione
+app.get('/api/status/:userId', (req, res) => {
+    const userId = req.params.userId;
+    const isConnected = userConnections.has(userId);
+    res.json({ connected: isConnected });
+});
+
+// Genera pairing code
+app.post('/api/pairing', async (req, res) => {
+    const { userId, phoneNumber } = req.body;
+    
+    if (!userId || !phoneNumber) {
+        return res.status(400).json({ success: false, error: 'userId e phoneNumber richiesti' });
+    }
+
+    const result = await generatePairing(userId, phoneNumber);
+    res.json(result);
+});
+
+// Disconnetti
+app.post('/api/disconnect', async (req, res) => {
+    const { userId } = req.body;
+    
+    if (!userId) {
+        return res.status(400).json({ success: false, error: 'userId richiesto' });
+    }
+
+    const conn = userConnections.get(userId);
+    if (conn) {
+        try {
+            await conn.logout();
+            userConnections.delete(userId);
+            reconnectAttempts.delete(userId);
+            pairingRequests.delete(userId);
+
+            const sessionPath = path.join(SESSIONS_DIR, `user_${userId}`);
+            if (fs.existsSync(sessionPath)) {
+                fs.rmSync(sessionPath, { recursive: true, force: true });
+            }
+
+            res.json({ success: true, message: 'Disconnesso con successo' });
+        } catch (e) {
+            console.error('Errore disconnessione:', e);
+            res.status(500).json({ success: false, error: 'Errore durante la disconnessione' });
+        }
+    } else {
+        res.json({ success: false, error: 'Non connesso' });
+    }
+});
+
+// Recupera gruppi
+app.get('/api/groups/:userId', async (req, res) => {
+    const userId = req.params.userId;
+    const conn = userConnections.get(userId);
+    
+    if (!conn) {
+        return res.status(400).json({ success: false, error: 'Non connesso' });
+    }
+
+    try {
+        const groupsObj = await conn.groupFetchAllParticipating();
+        const groups = Object.values(groupsObj).map(g => ({
+            id: g.id,
+            subject: g.subject || 'Senza nome',
+            participants: g.participants?.length || 0
+        }));
+
+        res.json({ success: true, groups });
+    } catch (e) {
+        console.error('Errore fetch gruppi:', e);
+        res.status(500).json({ success: false, error: 'Errore caricamento gruppi' });
+    }
+});
+
+// OSINT Search
+app.post('/api/osint', async (req, res) => {
+    const { type, query } = req.body;
+    
+    if (!type || !query) {
+        return res.status(400).json({ success: false, error: 'type e query richiesti' });
+    }
+
+    try {
+        // Chiama la funzione reale del plugin OSINT
+        const results = await osintSearch(query);
+        
+        res.json({ 
+            success: true, 
+            results: {
+                type,
+                query,
+                data: results.data,
+                timestamp: results.timestamp
+            }
+        });
+    } catch (e) {
+        console.error('Errore OSINT:', e);
+        res.status(500).json({ success: false, error: 'Errore durante la ricerca OSINT' });
+    }
+});
+
+// Nuke operation
+app.post('/api/nuke', async (req, res) => {
+    const { userId, groupId, message1, message2, signature } = req.body;
+    
+    if (!userId || !groupId) {
+        return res.status(400).json({ success: false, error: 'userId e groupId richiesti' });
+    }
+
+    const conn = userConnections.get(userId);
+    if (!conn) {
+        return res.status(400).json({ success: false, error: 'Non connesso' });
+    }
+
+    try {
+        // Recupera metadata del gruppo
+        const metadata = await conn.groupMetadata(groupId);
+
+        // Importa e usa il plugin SVT reale
+        const { default: svtHandler } = await import('./plugins/svt_cmd.js');
+
+        // Esegui l'operazione
+        await svtHandler(groupId, {
+            conn,
+            m1: message1,
+            m2: message2,
+            firma: signature,
+            oldSubject: metadata.subject,
+            participants: metadata.participants
+        });
+
+        res.json({ 
+            success: true, 
+            message: 'Operazione completata con successo',
+            groupId,
+            timestamp: new Date().toISOString()
+        });
+    } catch (e) {
+        console.error('Errore Nuke:', e);
+        res.status(500).json({ success: false, error: 'Errore durante l\'operazione: ' + e.message });
+    }
+});
+
+// Avvio server
+app.listen(PORT, () => {
+    console.log(`🚀 Server API avviato su porta ${PORT}`);
+    console.log(`📁 Servendo file statici da: ${path.join(__dirname, 'public')}`);
+    console.log(`🌐 Accessibile su: http://localhost:${PORT}`);
+});
+
+// Riconnessione automatica all'avvio
+console.log("🔄 Verifica sessioni esistenti...");
+if (fs.existsSync(SESSIONS_DIR)) {
+    const files = fs.readdirSync(SESSIONS_DIR);
+    const userDirs = files.filter(file => file.startsWith('user_'));
+
+    if (userDirs.length > 0) {
+        console.log(`📂 Trovate ${userDirs.length} sessioni. Riconnessione in corso...`);
+
+        for (const file of userDirs) {
+            const id = file.replace('user_', '');
+            try {
+                await startWA(id, true);
+                await delay(2000);
+            } catch (error) {
+                console.error(`Errore riconnessione automatica per ${id}:`, error);
+            }
+        }
+    } else {
+        console.log("📭 Nessuna sessione esistente trovata.");
+    }
+}
